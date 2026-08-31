@@ -20,9 +20,8 @@ _DFNS_BASE_URL = "https://raw.githubusercontent.com/w3c/webref/{commit}/ed/dfns"
 # snapshot). Only this file carries the readable prose section ids
 # (`#type-`/`#command-`/`#event-`/`#module-`) that webref does not extract; the schema
 # step runs extract_bidi_anchors.mjs over it to build the prose-anchor index. This is a
-# separate repo/branch from the webref pin above, but it only annotates types that come
-# from the CDDL, so //scripts:update_cddl takes gh-pages' tip in lockstep -- only when the
-# CDDL content below changes, never for a prose rebuild on its own.
+# separate repo/branch from the webref pin above, but it only annotates types that come from
+# the CDDL, so //scripts:update_cddl takes gh-pages' tip only when the CDDL content changes.
 _BIDI_SPEC_HTML_COMMIT = "975a118c247b6f0e0b64f8093b5f01238423bab1"
 _BIDI_SPEC_HTML_SHA256 = "ddfc94f2d7692a3da189c997cb3e88388044b661d2459e68cf7a977a11807446"
 _BIDI_SPEC_HTML_URL = "https://raw.githubusercontent.com/w3c/webdriver-bidi/{commit}/index.html".format(

@@ -23,10 +23,9 @@ that branch is a separate repo, so it is resolved separately). It regenerates:
     pins in ``common/webref_cddl.bzl``
   - the matching ``use_repo(...)`` list for the extension in ``MODULE.bazel``
 
-Nothing is written unless the consumed webref content changed: webref's tip advances
-several times a day for specs this repo does not consume, and the rendered spec rebuilds
-whenever its prose is edited, so following either tip would be churn. Both commit pins
-therefore record where the CDDL content last changed, not the latest tip.
+Nothing is written unless the consumed webref content changed, so both commit pins record
+where the CDDL content last changed rather than the latest tip. The rendered spec is repinned
+in lockstep with the CDDL, since it only annotates types the grammar defines.
 """
 
 import hashlib
@@ -149,14 +148,13 @@ def sub_once(content, pattern, replacement, where):
 
 
 def current_bidi_pin(content):
-    """The gh-pages commit and sha256 already pinned in the .bzl."""
     commit = re.search(r'_BIDI_SPEC_HTML_COMMIT = "([0-9a-f]+)"', content).group(1)
     sha256 = re.search(r'_BIDI_SPEC_HTML_SHA256 = "([0-9a-f]+)"', content).group(1)
     return commit, sha256
 
 
 def drop_commit(content):
-    """Content with the webref commit pin blanked, leaving only what gets downloaded."""
+    """Content with the webref commit blanked, so a pin bump alone does not read as a change."""
     return re.sub(r'(?<![A-Z_])_COMMIT = "[0-9a-f]+"', "", content)
 
 
@@ -214,9 +212,7 @@ def main():
     dfns_entries = build_dfns_entries(commit)
     print(f"Refreshed {len(dfns_entries)} dfns indexes in {DFNS_PATH}")
 
-    # The rendered spec only annotates types that come from the CDDL, so it is repinned in
-    # lockstep rather than tracked on its own: gh-pages rebuilds far more often than the
-    # grammar changes, and following its tip would churn a pin nothing downstream consumed.
+    # Probe with the pin already in the file so a gh-pages rebuild cannot open the gate.
     webref_only = update_pin(old, commit, cddl_entries, dfns_entries, *current_bidi_pin(old))
     if drop_commit(webref_only) == drop_commit(old):
         print("No pinned spec content changed; leaving the pins at their current commits.")

@@ -43,8 +43,8 @@ on:
   workflow_call:
 
 concurrency:
-  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.leg || github.event_name }}
-  cancel-in-progress: true
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.leg || 'push' }}-${{ inputs.racecar_run }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -63,6 +63,9 @@ jobs:
     name: Build Index
     if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/trunk'
     uses: ./.github/workflows/ci-build-index.yml
+    with:
+      chalk_on: ${{ github.event_name == 'workflow_dispatch' && inputs.leg != 'baseline' }}
+      profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
 
   check:
     name: Check Targets
@@ -71,6 +74,8 @@ jobs:
         (startsWith(github.head_ref, 'renovate/') != true || github.event_name == 'workflow_call')
     uses: ./.github/workflows/bazel.yml
     with:
+      chalk_on: ${{ github.event_name == 'workflow_dispatch' && inputs.leg != 'baseline' }}
+      profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
       name: Check Targets
       cache-name: bazel-test-file-index
       run: |
@@ -154,24 +159,28 @@ jobs:
     name: .NET
     needs: read-targets
     uses: ./.github/workflows/ci-dotnet.yml
+    with:
+      chalk_on: ${{ github.event_name == 'workflow_dispatch' && inputs.leg != 'baseline' }}
+      profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
     if: needs.read-targets.outputs.dotnet != ''
 
-  java:
-    name: Java
-    needs: read-targets
-    uses: ./.github/workflows/ci-java.yml
-    if: needs.read-targets.outputs.java != ''
 
   grid:
     name: Grid
     needs: read-targets
     uses: ./.github/workflows/ci-grid.yml
+    with:
+      chalk_on: ${{ github.event_name == 'workflow_dispatch' && inputs.leg != 'baseline' }}
+      profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
     if: needs.read-targets.outputs.grid != ''
 
   python:
     name: Python
     needs: read-targets
     uses: ./.github/workflows/ci-python.yml
+    with:
+      chalk_on: ${{ github.event_name == 'workflow_dispatch' && inputs.leg != 'baseline' }}
+      profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
     if: needs.read-targets.outputs.py != ''
 
   ruby:
@@ -180,12 +189,17 @@ jobs:
     uses: ./.github/workflows/ci-ruby.yml
     if: needs.read-targets.outputs.rb != ''
     with:
+      chalk_on: ${{ github.event_name == 'workflow_dispatch' && inputs.leg != 'baseline' }}
+      profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
       smoke: ${{ !(github.head_ref == 'pinned-browser-updates' && contains(github.event.pull_request.title, '(major)')) }}
 
   rust:
     name: Rust
     needs: read-targets
     uses: ./.github/workflows/ci-rust.yml
+    with:
+      chalk_on: ${{ github.event_name == 'workflow_dispatch' && inputs.leg != 'baseline' }}
+      profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
     secrets:
       SELENIUM_CI_TOKEN: ${{ secrets.SELENIUM_CI_TOKEN }}
     if: needs.read-targets.outputs.rust != ''
@@ -194,12 +208,15 @@ jobs:
     name: JavaScript
     needs: read-targets
     uses: ./.github/workflows/ci-javascript.yml
+    with:
+      chalk_on: ${{ github.event_name == 'workflow_dispatch' && inputs.leg != 'baseline' }}
+      profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
     if: needs.read-targets.outputs.js != ''
 
   merge-flaky-results:
     name: Merge Flaky Results
     if: always() && github.event_name == 'schedule' && github.ref == 'refs/heads/trunk'
-    needs: [dotnet, java, grid, python, ruby, rust, javascript]
+    needs: [ dotnet, grid, python, ruby, rust, javascript ]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source tree
@@ -238,7 +255,7 @@ jobs:
   ci-success:
     name: CI Success
     if: always()
-    needs: [check, read-targets, dotnet, java, grid, python, ruby, rust, javascript]
+    needs: [ check, read-targets, dotnet, grid, python, ruby, rust, javascript ]
     runs-on: ubuntu-latest
     steps:
       - name: Verify required jobs succeeded

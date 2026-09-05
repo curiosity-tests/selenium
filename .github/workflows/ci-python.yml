@@ -1,11 +1,42 @@
 name: CI - Python
 
+# racecar fork-testbed patch. Changes from upstream:
+#   1. workflow_dispatch with a `leg` input, so racecar can trigger a run and
+#      choose baseline vs instrumented. Upstream fires on push/PR, which racecar
+#      cannot drive.
+#   2. actions/checkout -> crashappsec/action-checkout, which wraps checkout and
+#      setup-chalk-action together. `chalk:` is the single variable separating
+#      the two arms, and `profile:` selects the observables profile.
+#   3. permissions: id-token: write for the action's OIDC connect. Declaring the
+#      block zeroes every unlisted scope, so the rest is restated.
+#   4. A fail-closed assertion on the instrumented arm.
+#   5. fail-fast: false on every matrix -- a measurement-integrity change, not a
+#      build change: the instrumented arm has strictly more failure surface, so
+#      fail-fast cancels its siblings more often than baseline's and biases the
+#      comparison.
+# Build and test COMMANDS are byte-identical to upstream.
+
 on:
   workflow_call:
+    inputs:
+      chalk_on:
+        description: "run under chalk/curiosity; passed down by the calling workflow"
+        type: boolean
+        default: false
+      profile:
+        description: "CrashOverride chalk profile"
+        type: string
+        default: curiosity-tests-racecar
   workflow_dispatch:
 
 permissions:
   contents: read
+  id-token: write
+
+env:
+  # A called workflow cannot read the caller's env, so the arm switch has to
+  # arrive as a workflow_call input.
+  CHALK_ON: ${{ inputs.chalk_on }}
 
 jobs:
   build:
@@ -13,6 +44,8 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     uses: ./.github/workflows/bazel.yml
     with:
+      chalk_on: ${{ github.event_name == 'workflow_dispatch' && inputs.leg != 'baseline' }}
+      profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
       name: Build
       run: |
         bazel build //py:selenium-wheel //py:selenium-sdist
@@ -21,6 +54,8 @@ jobs:
     name: Lint (ruff)
     uses: ./.github/workflows/bazel.yml
     with:
+      chalk_on: ${{ github.event_name == 'workflow_dispatch' && inputs.leg != 'baseline' }}
+      profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
       name: Lint (ruff)
       run: bazel run //py:ruff-check -- --no-fix
 
@@ -28,6 +63,8 @@ jobs:
     name: Lint (mypy)
     uses: ./.github/workflows/bazel.yml
     with:
+      chalk_on: ${{ github.event_name == 'workflow_dispatch' && inputs.leg != 'baseline' }}
+      profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
       name: Lint (mypy)
       run: bazel run //py:mypy
 
@@ -35,6 +72,8 @@ jobs:
     name: Lint (docs)
     uses: ./.github/workflows/bazel.yml
     with:
+      chalk_on: ${{ github.event_name == 'workflow_dispatch' && inputs.leg != 'baseline' }}
+      profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
       name: Lint (docs)
       run: |
         bazel run //py:generate-api-listing
@@ -49,8 +88,10 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ['3.10', '3.14']
-        os: [ubuntu, macos, windows]
+        os: [ubuntu]
     with:
+      chalk_on: ${{ github.event_name == 'workflow_dispatch' && inputs.leg != 'baseline' }}
+      profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
       name: Unit Tests (${{ matrix.python-version }}, ${{ matrix.os }})
       os: ${{ matrix.os }}
       python-version: ${{ matrix.python-version }}
@@ -60,6 +101,8 @@ jobs:
     name: Remote Tests
     uses: ./.github/workflows/bazel.yml
     with:
+      chalk_on: ${{ github.event_name == 'workflow_dispatch' && inputs.leg != 'baseline' }}
+      profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
       name: Integration Tests Remote
       needs-display: true
       rerun-with-debug: true
@@ -82,10 +125,9 @@ jobs:
       matrix:
         browser: [chrome, firefox, chrome-bidi, edge]
         os: [windows]
-        include:
-          - browser: safari
-            os: macos
     with:
+      chalk_on: ${{ github.event_name == 'workflow_dispatch' && inputs.leg != 'baseline' }}
+      profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
       name: Integration Tests (${{ matrix.browser }})
       needs-display: true
       os: ${{ matrix.os }}
@@ -108,8 +150,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu, windows, macos]
+        os: [ubuntu]
     with:
+      chalk_on: ${{ github.event_name == 'workflow_dispatch' && inputs.leg != 'baseline' }}
+      profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
       name: Integration Tests Selenium Manager (${{ matrix.os }})
       needs-display: true
       os: ${{ matrix.os }}

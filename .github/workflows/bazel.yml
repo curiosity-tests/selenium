@@ -1,8 +1,32 @@
 name: Bazel
 
+# racecar fork-testbed patch. Changes from upstream:
+#   1. workflow_dispatch with a `leg` input, so racecar can trigger a run and
+#      choose baseline vs instrumented. Upstream fires on push/PR, which racecar
+#      cannot drive.
+#   2. actions/checkout -> crashappsec/action-checkout, which wraps checkout and
+#      setup-chalk-action together. `chalk:` is the single variable separating
+#      the two arms, and `profile:` selects the observables profile.
+#   3. permissions: id-token: write for the action's OIDC connect. Declaring the
+#      block zeroes every unlisted scope, so the rest is restated.
+#   4. A fail-closed assertion on the instrumented arm.
+#   5. fail-fast: false on every matrix -- a measurement-integrity change, not a
+#      build change: the instrumented arm has strictly more failure surface, so
+#      fail-fast cancels its siblings more often than baseline's and biases the
+#      comparison.
+# Build and test COMMANDS are byte-identical to upstream.
+
 on:
   workflow_call:
     inputs:
+      chalk_on:
+        description: "run under chalk/curiosity; passed down by the calling workflow"
+        type: boolean
+        default: false
+      profile:
+        description: "CrashOverride chalk profile"
+        type: string
+        default: curiosity-tests-racecar
       name:
         description: Name of workflow
         required: false
@@ -96,10 +120,19 @@ on:
         description: Value the run script writes to $GITHUB_OUTPUT as "output=..."; empty when unused
         value: ${{ jobs.bazel.outputs.output }}
 
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  # A called workflow cannot read the caller's env, so the arm switch has to
+  # arrive as a workflow_call input.
+  CHALK_ON: ${{ inputs.chalk_on }}
+
 jobs:
   bazel:
     name: ${{ inputs.name }}
-    runs-on: ${{ contains(inputs.os, '-') && inputs.os || format('{0}-latest', inputs.os) }}
+    runs-on: ubuntu-latest
     outputs:
       output: ${{ steps.run-bazel.outputs.output }}
     env:
@@ -133,11 +166,22 @@ jobs:
             echo "val=$((COMMIT_COUNT + 1))" >> "$GITHUB_OUTPUT"
           fi
       - name: Checkout source tree
-        uses: actions/checkout@v6
+        uses: crashappsec/action-checkout@main
         with:
+          chalk: ${{ env.CHALK_ON }}
+          profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
+          # inert at action-checkout@main (not an input there); kept for forward-compat
+          observables_continue_on_error: false
+          # action-checkout defaults LFS on; actions/checkout does not
+          lfs: false
           ref: ${{ inputs.ref || github.ref }}
           fetch-depth: ${{ steps.depth.outputs.val }}
           fetch-tags: ${{ inputs.fetch-depth != '' }}
+      - name: Assert instrumentation is live
+        if: env.CHALK_ON == 'true'
+        run: |
+          test -n "${CURIOSITY_ROOT:-}" || { echo "::error::CURIOSITY_ROOT unset - observables never installed"; exit 1; }
+          test -S "${CURIOSITY_SOCKET_NAME:?socket name unset}" || { echo "::error::co-hostd socket absent"; exit 1; }
       - name: Pull latest changes from head ref for PRs
         if: contains(github.head_ref, 'renovate/')
         shell: bash

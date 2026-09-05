@@ -43,7 +43,7 @@ on:
   workflow_call:
 
 concurrency:
-  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ inputs.leg || github.event_name }}
   cancel-in-progress: true
 
 permissions:

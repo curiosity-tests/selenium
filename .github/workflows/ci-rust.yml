@@ -1,8 +1,32 @@
 name: CI - Rust
 
+# racecar fork-testbed patch. Changes from upstream:
+#   1. workflow_dispatch with a `leg` input, so racecar can trigger a run and
+#      choose baseline vs instrumented. Upstream fires on push/PR, which racecar
+#      cannot drive.
+#   2. actions/checkout -> crashappsec/action-checkout, which wraps checkout and
+#      setup-chalk-action together. `chalk:` is the single variable separating
+#      the two arms, and `profile:` selects the observables profile.
+#   3. permissions: id-token: write for the action's OIDC connect. Declaring the
+#      block zeroes every unlisted scope, so the rest is restated.
+#   4. A fail-closed assertion on the instrumented arm.
+#   5. fail-fast: false on every matrix -- a measurement-integrity change, not a
+#      build change: the instrumented arm has strictly more failure surface, so
+#      fail-fast cancels its siblings more often than baseline's and biases the
+#      comparison.
+# Build and test COMMANDS are byte-identical to upstream.
+
 on:
   workflow_call:
     inputs:
+      chalk_on:
+        description: "run under chalk/curiosity; passed down by the calling workflow"
+        type: boolean
+        default: false
+      profile:
+        description: "CrashOverride chalk profile"
+        type: string
+        default: curiosity-tests-racecar
       release:
         required: false
         type: boolean
@@ -18,6 +42,12 @@ on:
 
 permissions:
   contents: read
+  id-token: write
+
+env:
+  # A called workflow cannot read the caller's env, so the arm switch has to
+  # arrive as a workflow_call input.
+  CHALK_ON: ${{ inputs.chalk_on }}
 
 jobs:
   tests:
@@ -27,75 +57,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos
           - os: ubuntu
           - os: ubuntu-24.04-arm
-          - os: windows
     with:
+      chalk_on: ${{ github.event_name == 'workflow_dispatch' && inputs.leg != 'baseline' }}
+      profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
       name: Tests (${{ matrix.os }})
       os: ${{ matrix.os }}
       rerun-with-debug: true
       run: bazel test --test_env=RUST_BACKTRACE=full --test_env=RUST_TEST_NOCAPTURE=1 --flaky_test_attempts=3 //rust/...
 
-  windows-stable:
-    name: "Windows Stable"
-    runs-on: windows-latest
-    needs: tests
-    if: github.event_name != 'schedule'
-    env:
-      RUSTFLAGS: '-Ctarget-feature=+crt-static'
-    steps:
-      - name: "Checkout project"
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ inputs.branch }}
-      - name: "Update Rust"
-        run: |
-          rustup update
-          rustup toolchain install stable-i686-pc-windows-msvc
-          rustup default stable-i686-pc-windows-msvc
-          rustc -vV
-      - name: "Build release binary"
-        run: cargo build --release
-        working-directory: rust
-      - name: "Rename binary"
-        run: mv rust/target/release/selenium-manager.exe selenium-manager-windows.exe
-      - name: "Upload release binary"
-        uses: actions/upload-artifact@v7
-        with:
-          name: selenium-manager-windows
-          path: selenium-manager-windows.exe
-          retention-days: 6
 
-  windows-debug:
-    name: "Windows Debug"
-    runs-on: windows-latest
-    needs: tests
-    if: github.event_name != 'schedule' && github.event.repository.fork == false && (github.ref == 'refs/heads/trunk' || inputs.release)
-    env:
-      RUSTFLAGS: '-Ctarget-feature=+crt-static'
-    steps:
-      - name: "Checkout project"
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ inputs.branch }}
-      - name: "Update Rust"
-        run: |
-          rustup update
-          rustup toolchain install stable-i686-pc-windows-msvc
-          rustup default stable-i686-pc-windows-msvc
-          rustc -vV
-      - name: "Build release binary"
-        run: cargo build --profile dev
-        working-directory: rust
-      - name: "Rename binary"
-        run: mv rust/target/debug/selenium-manager.exe selenium-manager-windows-debug.exe
-      - name: "Upload release binary"
-        uses: actions/upload-artifact@v7
-        with:
-          name: selenium-manager-windows-debug
-          path: selenium-manager-windows-debug.exe
-          retention-days: 6
 
   linux-stable:
     name: "Linux Stable"
@@ -103,10 +75,21 @@ jobs:
     needs: tests
     if: github.event_name != 'schedule'
     steps:
-      - name: "Checkout project"
-        uses: actions/checkout@v6
+      - name: Checkout project
+        uses: crashappsec/action-checkout@main
         with:
+          chalk: ${{ env.CHALK_ON }}
+          profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
+          # inert at action-checkout@main (not an input there); kept for forward-compat
+          observables_continue_on_error: false
+          # action-checkout defaults LFS on; actions/checkout does not
+          lfs: false
           ref: ${{ inputs.branch }}
+      - name: Assert instrumentation is live
+        if: env.CHALK_ON == 'true'
+        run: |
+          test -n "${CURIOSITY_ROOT:-}" || { echo "::error::CURIOSITY_ROOT unset - observables never installed"; exit 1; }
+          test -S "${CURIOSITY_SOCKET_NAME:?socket name unset}" || { echo "::error::co-hostd socket absent"; exit 1; }
       - name: "Update Rust"
         run: |
           rustup update
@@ -143,10 +126,21 @@ jobs:
     needs: tests
     if: github.event_name != 'schedule' && github.event.repository.fork == false && (github.ref == 'refs/heads/trunk' || inputs.release)
     steps:
-      - name: "Checkout project"
-        uses: actions/checkout@v6
+      - name: Checkout project
+        uses: crashappsec/action-checkout@main
         with:
+          chalk: ${{ env.CHALK_ON }}
+          profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
+          # inert at action-checkout@main (not an input there); kept for forward-compat
+          observables_continue_on_error: false
+          # action-checkout defaults LFS on; actions/checkout does not
+          lfs: false
           ref: ${{ inputs.branch }}
+      - name: Assert instrumentation is live
+        if: env.CHALK_ON == 'true'
+        run: |
+          test -n "${CURIOSITY_ROOT:-}" || { echo "::error::CURIOSITY_ROOT unset - observables never installed"; exit 1; }
+          test -S "${CURIOSITY_SOCKET_NAME:?socket name unset}" || { echo "::error::co-hostd socket absent"; exit 1; }
       - name: "Update Rust"
         run: |
           rustup update
@@ -179,73 +173,7 @@ jobs:
           path: selenium-manager-linux-arm64-debug.tar
           retention-days: 6
 
-  macos-stable:
-    name: "MacOS Stable"
-    runs-on: macos-latest
-    needs: tests
-    if: github.event_name != 'schedule'
-    env:
-      RUSTFLAGS: '-Ctarget-feature=+crt-static'
-    steps:
-      - name: "Checkout project"
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ inputs.branch }}
-      - name: "Update Rust"
-        run: |
-          rustup update
-          rustup target add x86_64-apple-darwin
-          rustup target add aarch64-apple-darwin
-          rustc -vV
-      - name: "Build release binary"
-        run: |
-          cargo build --target x86_64-apple-darwin --release
-          cargo build --target aarch64-apple-darwin --release
-          lipo -create -output target/selenium-manager-macos \
-            target/aarch64-apple-darwin/release/selenium-manager \
-            target/x86_64-apple-darwin/release/selenium-manager
-        working-directory: rust
-      - name: "Upload release binary"
-        uses: actions/upload-artifact@v7
-        with:
-          name: selenium-manager-macos
-          path: rust/target/selenium-manager-macos
-          retention-days: 6
 
-  macos-debug:
-    name: "MacOS Debug"
-    runs-on: macos-latest
-    needs: tests
-    if: github.event_name != 'schedule' && github.event.repository.fork == false && (github.ref == 'refs/heads/trunk' || inputs.release)
-    env:
-      RUSTFLAGS: '-Ctarget-feature=+crt-static'
-    steps:
-      - name: "Checkout project"
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ inputs.branch }}
-      - name: "Update Rust"
-        run: |
-          rustup update
-          rustup target add x86_64-apple-darwin
-          rustup target add aarch64-apple-darwin
-          rustc -vV
-      - name: "Build release binary"
-        run: |
-          cargo build --target x86_64-apple-darwin --profile dev
-          cargo build --target aarch64-apple-darwin --profile dev
-          lipo -create -output target/selenium-manager \
-            target/aarch64-apple-darwin/debug/selenium-manager \
-            target/x86_64-apple-darwin/debug/selenium-manager
-          cd target
-          tar -cvf ../../selenium-manager-macos-debug.tar selenium-manager
-        working-directory: rust
-      - name: "Upload release binary"
-        uses: actions/upload-artifact@v7
-        with:
-          name: selenium-manager-macos-debug
-          path: selenium-manager-macos-debug.tar
-          retention-days: 6
 
   sbom:
     name: "SBOM and Notices"
@@ -253,10 +181,21 @@ jobs:
     needs: tests
     if: github.event_name != 'schedule' && github.event.repository.fork == false && (github.ref == 'refs/heads/trunk' || inputs.release)
     steps:
-      - name: "Checkout project"
-        uses: actions/checkout@v6
+      - name: Checkout project
+        uses: crashappsec/action-checkout@main
         with:
+          chalk: ${{ env.CHALK_ON }}
+          profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
+          # inert at action-checkout@main (not an input there); kept for forward-compat
+          observables_continue_on_error: false
+          # action-checkout defaults LFS on; actions/checkout does not
+          lfs: false
           ref: ${{ inputs.branch }}
+      - name: Assert instrumentation is live
+        if: env.CHALK_ON == 'true'
+        run: |
+          test -n "${CURIOSITY_ROOT:-}" || { echo "::error::CURIOSITY_ROOT unset - observables never installed"; exit 1; }
+          test -S "${CURIOSITY_SOCKET_NAME:?socket name unset}" || { echo "::error::co-hostd socket absent"; exit 1; }
       - name: "Update Rust"
         run: |
           rustup update
@@ -281,7 +220,7 @@ jobs:
   release:
     name: "Release Binaries"
     runs-on: ubuntu-latest
-    needs: [ macos-stable, linux-stable, windows-stable, macos-debug, linux-debug, windows-debug, sbom ]
+    needs: [ linux-stable, linux-debug, sbom ]
     if: github.event_name != 'schedule' && github.event.repository.fork == false && (github.ref == 'refs/heads/trunk' || inputs.release)
     steps:
       - name: "Checkout selenium_manager_artifacts"

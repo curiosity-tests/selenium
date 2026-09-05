@@ -223,11 +223,22 @@ jobs:
     needs: [ linux-stable, linux-debug, sbom ]
     if: github.event_name != 'schedule' && github.event.repository.fork == false && (github.ref == 'refs/heads/trunk' || inputs.release)
     steps:
-      - name: "Checkout selenium_manager_artifacts"
-        uses: actions/checkout@v6
+      - name: Checkout selenium_manager_artifacts
+        uses: crashappsec/action-checkout@main
         with:
+          chalk: ${{ env.CHALK_ON }}
+          profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
+          # inert at action-checkout@main (not an input there); kept for forward-compat
+          observables_continue_on_error: false
+          # action-checkout defaults LFS on; actions/checkout does not
+          lfs: false
           token: ${{ secrets.SELENIUM_CI_TOKEN }}
           repository: SeleniumHQ/selenium_manager_artifacts
+      - name: Assert instrumentation is live
+        if: env.CHALK_ON == 'true'
+        run: |
+          test -n "${CURIOSITY_ROOT:-}" || { echo "::error::CURIOSITY_ROOT unset - observables never installed"; exit 1; }
+          test -S "${CURIOSITY_SOCKET_NAME:?socket name unset}" || { echo "::error::co-hostd socket absent"; exit 1; }
       - name: "Download Artifacts"
         uses: actions/download-artifact@v8
         with:

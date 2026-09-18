@@ -19,12 +19,12 @@ name: CI
 on:
   pull_request:
     paths-ignore:
-      - 'docs/decisions/**'
+    - 'docs/decisions/**'
   push:
     branches:
-      - trunk
+    - trunk
   schedule:
-    - cron: "0 4 * * *"
+  - cron: "0 4 * * *"
   workflow_dispatch:
     inputs:
       leg:
@@ -116,45 +116,45 @@ jobs:
       rust: ${{ steps.read.outputs.rust }}
       js: ${{ steps.read.outputs.js }}
     steps:
-      - name: Download targets
-        uses: actions/download-artifact@v8
-        with:
-          name: check-targets
-      - name: Read targets
-        id: read
-        env:
-          COMMIT_MESSAGES: ${{ join(github.event.commits.*.message, ' ') }}
-          PR_TITLE: ${{ github.event.pull_request.title }}
-        run: |
-          targets=$(cat bazel-targets.txt 2>/dev/null || echo "")
-          check_binding() {
-            local pattern=$1 tag=$2
-            if [[ "$targets" == *"${pattern}/"* ]] || [[ "$targets" == *"${pattern}:"* ]] || [[ "$COMMIT_MESSAGES" == *"[$tag]"* ]] || [[ "$PR_TITLE" == *"[$tag]"* ]]; then
-              echo "$tag=true" >> "$GITHUB_OUTPUT"
-            fi
-          }
-          process_binding() {
-            local pattern=$1 tag=$2
-            local lang_targets
-            lang_targets=$(echo "$targets" | tr ' ' '\n' | awk -v p="^${pattern}[:/]" '$0 ~ p')
-            if [ -n "$lang_targets" ]; then
-              echo "$tag=true" >> "$GITHUB_OUTPUT"
-              echo "$lang_targets" > "bazel-targets-${tag}.txt"
-            fi
-          }
-          check_binding "//java" "java"
-          check_binding "openqa/selenium/grid" "grid"
-          check_binding "//dotnet" "dotnet"
-          check_binding "//rust" "rust"
-          check_binding "//javascript" "js"
-          process_binding "//rb" "rb"
-          process_binding "//py" "py"
-      - name: Upload target files
-        uses: actions/upload-artifact@v7
-        with:
-          name: targets
-          path: bazel-targets-*.txt
-          if-no-files-found: ignore
+    - name: Download targets
+      uses: actions/download-artifact@v8
+      with:
+        name: check-targets
+    - name: Read targets
+      id: read
+      env:
+        COMMIT_MESSAGES: ${{ join(github.event.commits.*.message, ' ') }}
+        PR_TITLE: ${{ github.event.pull_request.title }}
+      run: |
+        targets=$(cat bazel-targets.txt 2>/dev/null || echo "")
+        check_binding() {
+          local pattern=$1 tag=$2
+          if [[ "$targets" == *"${pattern}/"* ]] || [[ "$targets" == *"${pattern}:"* ]] || [[ "$COMMIT_MESSAGES" == *"[$tag]"* ]] || [[ "$PR_TITLE" == *"[$tag]"* ]]; then
+            echo "$tag=true" >> "$GITHUB_OUTPUT"
+          fi
+        }
+        process_binding() {
+          local pattern=$1 tag=$2
+          local lang_targets
+          lang_targets=$(echo "$targets" | tr ' ' '\n' | awk -v p="^${pattern}[:/]" '$0 ~ p')
+          if [ -n "$lang_targets" ]; then
+            echo "$tag=true" >> "$GITHUB_OUTPUT"
+            echo "$lang_targets" > "bazel-targets-${tag}.txt"
+          fi
+        }
+        check_binding "//java" "java"
+        check_binding "openqa/selenium/grid" "grid"
+        check_binding "//dotnet" "dotnet"
+        check_binding "//rust" "rust"
+        check_binding "//javascript" "js"
+        process_binding "//rb" "rb"
+        process_binding "//py" "py"
+    - name: Upload target files
+      uses: actions/upload-artifact@v7
+      with:
+        name: targets
+        path: bazel-targets-*.txt
+        if-no-files-found: ignore
   dotnet:
     name: .NET
     needs: read-targets
@@ -216,51 +216,123 @@ jobs:
   merge-flaky-results:
     name: Merge Flaky Results
     if: always() && github.event_name == 'schedule' && github.ref == 'refs/heads/trunk'
-    needs: [ dotnet, grid, python, ruby, rust, javascript ]
+    needs: [dotnet, grid, python, ruby, rust, javascript]
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout source tree
-        uses: crashappsec/action-checkout@main
-        with:
-          chalk: ${{ env.CHALK_ON }}
-          profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
+    - name: Checkout source tree
+      uses: crashappsec/action-checkout@main
+      with:
+        chalk: ${{ env.CHALK_ON }}
+        profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
           # inert at action-checkout@main (not an input there); kept for forward-compat
-          observables_continue_on_error: false
+        observables_continue_on_error: false
           # action-checkout defaults LFS on; actions/checkout does not
-          lfs: false
-      - name: Assert instrumentation is live
-        if: env.CHALK_ON == 'true'
-        run: |
-          test -n "${CURIOSITY_ROOT:-}" || { echo "::error::CURIOSITY_ROOT unset - observables never installed"; exit 1; }
-          test -S "${CURIOSITY_SOCKET_NAME:?socket name unset}" || { echo "::error::co-hostd socket absent"; exit 1; }
-      - name: Download results
-        uses: actions/download-artifact@v8
-        continue-on-error: true
-        with:
-          pattern: flaky-*
-          path: build/flaky-artifacts
-      - name: Merge results
-        id: merge
-        shell: bash
-        run: ./scripts/github-actions/merge-flaky-results.sh
-      - name: Upload results
-        if: steps.merge.outputs.results == 'true'
-        uses: actions/upload-artifact@v7
-        with:
-          name: merged-flaky-results-${{ github.run_id }}
-          retention-days: 60
-          path: build/flaky/results.jsonl
-          overwrite: true
+        lfs: false
+    - name: Download results
+      uses: actions/download-artifact@v8
+      continue-on-error: true
+      with:
+        pattern: flaky-*
+        path: build/flaky-artifacts
+    - name: Merge results
+      id: merge
+      shell: bash
+      run: ./scripts/github-actions/merge-flaky-results.sh
+    - name: Upload results
+      if: steps.merge.outputs.results == 'true'
+      uses: actions/upload-artifact@v7
+      with:
+        name: merged-flaky-results-${{ github.run_id }}
+        retention-days: 60
+        path: build/flaky/results.jsonl
+        overwrite: true
 
+    - name: Check observables and crashes
+      if: always() && env.CHALK_ON == 'true'
+      shell: bash
+      run: |
+        set -uo pipefail
+        root="${CURIOSITY_ROOT:-}"
+        home="${CURIOSITY_HOME:-/mnt/curiosity}"
+        obs="${home}/observables"
+        fail=0
+
+        echo "::group::curiosity layout"
+        echo "CURIOSITY_ROOT=${root:-<unset>}"
+        echo "CURIOSITY_HOME=${home}"
+        ls -la "${obs}" 2>/dev/null || echo "no observables dir at ${obs}"
+        echo "::endgroup::"
+
+        # Observables for THIS run+attempt. The prefix matters: a stale file from an
+        # earlier run on the same mount would otherwise pass.
+        prefix="${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+        shopt -s nullglob
+        mine=("${obs}/${prefix}"*)
+        if [ ${#mine[@]} -eq 0 ]; then
+          mine=("${obs}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-observables"*)
+        fi
+        if [ ${#mine[@]} -eq 0 ]; then
+          echo "::error::no observables for run ${prefix} in ${obs} - instrumentation produced nothing"
+          fail=1
+        else
+          echo "observables present: ${#mine[@]} file(s)"
+          printf '  %s\n' "${mine[@]}"
+        fi
+
+        for f in "${mine[@]}"; do
+          case "$f" in
+            *.jsonl|*.json|*.combined)
+              if ! jq --slurp "." "$f" > /dev/null 2>&1; then
+                echo "::error::observables do not parse: $f"
+                fail=1
+              fi
+              ;;
+          esac
+        done
+
+        # Crash thresholds copied from check-run: a few null frames are noise, more than
+        # five is a stack walk into nothing.
+        for f in "${root}"/log/co-host*.log "${home}"/log/co-host*.log; do
+          [ -f "$f" ] || continue
+          echo "Asserting that there is no crash in $f"
+          if [ "$(grep -c 'p 00000000' "$f" 2>/dev/null || echo 0)" -gt 5 ] \
+            || [ "$(grep -E -c 'FATAL: Uncaught signal|Address not mapped at|RAX 0x.*RBX 0x' "$f" 2>/dev/null || echo 0)" -gt 1 ]; then
+            echo "::error::crash signature in $f"
+            grep -E 'FATAL: Uncaught signal|Address not mapped at' "$f" | head -5 || true
+            fail=1
+          fi
+        done
+
+        cores=("${root}"/coredump.* "${home}"/coredump.*)
+        if [ ${#cores[@]} -gt 0 ]; then
+          echo "::error::coredump present: ${cores[*]}"
+          fail=1
+        fi
+
+        for f in "${root}"/runc.log "${root}"/runc.global.log \
+                 "${home}"/runc.log "${home}"/runc.global.log; do
+          [ -f "$f" ] || continue
+          if grep -q '^E:' "$f"; then
+            echo "::error::error in $f"
+            grep '^E:' "$f" | head -5
+            fail=1
+          fi
+        done
+
+        if [ "$fail" -ne 0 ]; then
+          echo "::error::instrumentation check FAILED"
+          exit 1
+        fi
+        echo "instrumentation check passed"
   ci-success:
     name: CI Success
     if: always()
-    needs: [ check, read-targets, dotnet, grid, python, ruby, rust, javascript ]
+    needs: [check, read-targets, dotnet, grid, python, ruby, rust, javascript]
     runs-on: ubuntu-latest
     steps:
-      - name: Verify required jobs succeeded
-        run: |
-          if ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}; then
-            echo "One or more required jobs failed"
-            exit 1
-          fi
+    - name: Verify required jobs succeeded
+      run: |
+        if ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}; then
+          echo "One or more required jobs failed"
+          exit 1
+        fi

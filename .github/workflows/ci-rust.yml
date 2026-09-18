@@ -57,8 +57,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu
-          - os: ubuntu-24.04-arm
+        - os: ubuntu
+        - os: ubuntu-24.04-arm
     with:
       chalk_on: ${{ github.event_name == 'workflow_dispatch' && inputs.leg != 'baseline' }}
       profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
@@ -75,207 +75,495 @@ jobs:
     needs: tests
     if: github.event_name != 'schedule'
     steps:
-      - name: Checkout project
-        uses: crashappsec/action-checkout@main
-        with:
-          chalk: ${{ env.CHALK_ON }}
-          profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
+    - name: Checkout project
+      uses: crashappsec/action-checkout@main
+      with:
+        chalk: ${{ env.CHALK_ON }}
+        profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
           # inert at action-checkout@main (not an input there); kept for forward-compat
-          observables_continue_on_error: false
+        observables_continue_on_error: false
           # action-checkout defaults LFS on; actions/checkout does not
-          lfs: false
-          ref: ${{ inputs.branch }}
-      - name: Assert instrumentation is live
-        if: env.CHALK_ON == 'true'
-        run: |
-          test -n "${CURIOSITY_ROOT:-}" || { echo "::error::CURIOSITY_ROOT unset - observables never installed"; exit 1; }
-          test -S "${CURIOSITY_SOCKET_NAME:?socket name unset}" || { echo "::error::co-hostd socket absent"; exit 1; }
-      - name: "Update Rust"
-        run: |
-          rustup update
-          rustc -vV
-      - name: "Install cross"
-        run: |
-          cargo install cross --git https://github.com/cross-rs/cross
-      - name: "Build release binary (x64)"
-        run: cross build --target x86_64-unknown-linux-musl --release
-        working-directory: rust
-      - name: "Build release binary (arm64)"
-        run: cross build --target aarch64-unknown-linux-musl --release
-        working-directory: rust
-      - name: "Rename binary"
-        run: |
-          mv rust/target/x86_64-unknown-linux-musl/release/selenium-manager selenium-manager-linux
-          mv rust/target/aarch64-unknown-linux-musl/release/selenium-manager selenium-manager-linux-arm64
-      - name: "Upload release binary"
-        uses: actions/upload-artifact@v7
-        with:
-          name: selenium-manager-linux
-          path: selenium-manager-linux
-          retention-days: 6
-      - name: "Upload release binary"
-        uses: actions/upload-artifact@v7
-        with:
-          name: selenium-manager-linux-arm64
-          path: selenium-manager-linux-arm64
-          retention-days: 6
+        lfs: false
+        ref: ${{ inputs.branch }}
+    - name: "Update Rust"
+      run: |
+        rustup update
+        rustc -vV
+    - name: "Install cross"
+      run: |
+        cargo install cross --git https://github.com/cross-rs/cross
+    - name: "Build release binary (x64)"
+      run: cross build --target x86_64-unknown-linux-musl --release
+      working-directory: rust
+    - name: "Build release binary (arm64)"
+      run: cross build --target aarch64-unknown-linux-musl --release
+      working-directory: rust
+    - name: "Rename binary"
+      run: |
+        mv rust/target/x86_64-unknown-linux-musl/release/selenium-manager selenium-manager-linux
+        mv rust/target/aarch64-unknown-linux-musl/release/selenium-manager selenium-manager-linux-arm64
+    - name: "Upload release binary"
+      uses: actions/upload-artifact@v7
+      with:
+        name: selenium-manager-linux
+        path: selenium-manager-linux
+        retention-days: 6
+    - name: "Upload release binary"
+      uses: actions/upload-artifact@v7
+      with:
+        name: selenium-manager-linux-arm64
+        path: selenium-manager-linux-arm64
+        retention-days: 6
 
+    - name: Check observables and crashes
+      if: always() && env.CHALK_ON == 'true'
+      shell: bash
+      run: |
+        set -uo pipefail
+        root="${CURIOSITY_ROOT:-}"
+        home="${CURIOSITY_HOME:-/mnt/curiosity}"
+        obs="${home}/observables"
+        fail=0
+
+        echo "::group::curiosity layout"
+        echo "CURIOSITY_ROOT=${root:-<unset>}"
+        echo "CURIOSITY_HOME=${home}"
+        ls -la "${obs}" 2>/dev/null || echo "no observables dir at ${obs}"
+        echo "::endgroup::"
+
+        # Observables for THIS run+attempt. The prefix matters: a stale file from an
+        # earlier run on the same mount would otherwise pass.
+        prefix="${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+        shopt -s nullglob
+        mine=("${obs}/${prefix}"*)
+        if [ ${#mine[@]} -eq 0 ]; then
+          mine=("${obs}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-observables"*)
+        fi
+        if [ ${#mine[@]} -eq 0 ]; then
+          echo "::error::no observables for run ${prefix} in ${obs} - instrumentation produced nothing"
+          fail=1
+        else
+          echo "observables present: ${#mine[@]} file(s)"
+          printf '  %s\n' "${mine[@]}"
+        fi
+
+        for f in "${mine[@]}"; do
+          case "$f" in
+            *.jsonl|*.json|*.combined)
+              if ! jq --slurp "." "$f" > /dev/null 2>&1; then
+                echo "::error::observables do not parse: $f"
+                fail=1
+              fi
+              ;;
+          esac
+        done
+
+        # Crash thresholds copied from check-run: a few null frames are noise, more than
+        # five is a stack walk into nothing.
+        for f in "${root}"/log/co-host*.log "${home}"/log/co-host*.log; do
+          [ -f "$f" ] || continue
+          echo "Asserting that there is no crash in $f"
+          if [ "$(grep -c 'p 00000000' "$f" 2>/dev/null || echo 0)" -gt 5 ] \
+            || [ "$(grep -E -c 'FATAL: Uncaught signal|Address not mapped at|RAX 0x.*RBX 0x' "$f" 2>/dev/null || echo 0)" -gt 1 ]; then
+            echo "::error::crash signature in $f"
+            grep -E 'FATAL: Uncaught signal|Address not mapped at' "$f" | head -5 || true
+            fail=1
+          fi
+        done
+
+        cores=("${root}"/coredump.* "${home}"/coredump.*)
+        if [ ${#cores[@]} -gt 0 ]; then
+          echo "::error::coredump present: ${cores[*]}"
+          fail=1
+        fi
+
+        for f in "${root}"/runc.log "${root}"/runc.global.log \
+                 "${home}"/runc.log "${home}"/runc.global.log; do
+          [ -f "$f" ] || continue
+          if grep -q '^E:' "$f"; then
+            echo "::error::error in $f"
+            grep '^E:' "$f" | head -5
+            fail=1
+          fi
+        done
+
+        if [ "$fail" -ne 0 ]; then
+          echo "::error::instrumentation check FAILED"
+          exit 1
+        fi
+        echo "instrumentation check passed"
   linux-debug:
     name: "Linux Debug"
     runs-on: ubuntu-latest
     needs: tests
     if: github.event_name != 'schedule' && github.event.repository.fork == false && (github.ref == 'refs/heads/trunk' || inputs.release)
     steps:
-      - name: Checkout project
-        uses: crashappsec/action-checkout@main
-        with:
-          chalk: ${{ env.CHALK_ON }}
-          profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
+    - name: Checkout project
+      uses: crashappsec/action-checkout@main
+      with:
+        chalk: ${{ env.CHALK_ON }}
+        profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
           # inert at action-checkout@main (not an input there); kept for forward-compat
-          observables_continue_on_error: false
+        observables_continue_on_error: false
           # action-checkout defaults LFS on; actions/checkout does not
-          lfs: false
-          ref: ${{ inputs.branch }}
-      - name: Assert instrumentation is live
-        if: env.CHALK_ON == 'true'
-        run: |
-          test -n "${CURIOSITY_ROOT:-}" || { echo "::error::CURIOSITY_ROOT unset - observables never installed"; exit 1; }
-          test -S "${CURIOSITY_SOCKET_NAME:?socket name unset}" || { echo "::error::co-hostd socket absent"; exit 1; }
-      - name: "Update Rust"
-        run: |
-          rustup update
-          rustc -vV
-      - name: "Install cross"
-        run: |
-          cargo install cross --git https://github.com/cross-rs/cross
-      - name: "Build release binary (x64)"
-        run: |
-          cross build --target x86_64-unknown-linux-musl --profile dev
-          cd target/x86_64-unknown-linux-musl/debug
-          tar -cvf ../../../../selenium-manager-linux-debug.tar selenium-manager
-        working-directory: rust
-      - name: "Build release binary (arm64)"
-        run: |
-          cross build --target aarch64-unknown-linux-musl --profile dev
-          cd target/aarch64-unknown-linux-musl/debug
-          tar -cvf ../../../../selenium-manager-linux-arm64-debug.tar selenium-manager
-        working-directory: rust
-      - name: "Upload release binary"
-        uses: actions/upload-artifact@v7
-        with:
-          name: selenium-manager-linux-debug
-          path: selenium-manager-linux-debug.tar
-          retention-days: 6
-      - name: "Upload release binary"
-        uses: actions/upload-artifact@v7
-        with:
-          name: selenium-manager-linux-arm64-debug
-          path: selenium-manager-linux-arm64-debug.tar
-          retention-days: 6
+        lfs: false
+        ref: ${{ inputs.branch }}
+    - name: "Update Rust"
+      run: |
+        rustup update
+        rustc -vV
+    - name: "Install cross"
+      run: |
+        cargo install cross --git https://github.com/cross-rs/cross
+    - name: "Build release binary (x64)"
+      run: |
+        cross build --target x86_64-unknown-linux-musl --profile dev
+        cd target/x86_64-unknown-linux-musl/debug
+        tar -cvf ../../../../selenium-manager-linux-debug.tar selenium-manager
+      working-directory: rust
+    - name: "Build release binary (arm64)"
+      run: |
+        cross build --target aarch64-unknown-linux-musl --profile dev
+        cd target/aarch64-unknown-linux-musl/debug
+        tar -cvf ../../../../selenium-manager-linux-arm64-debug.tar selenium-manager
+      working-directory: rust
+    - name: "Upload release binary"
+      uses: actions/upload-artifact@v7
+      with:
+        name: selenium-manager-linux-debug
+        path: selenium-manager-linux-debug.tar
+        retention-days: 6
+    - name: "Upload release binary"
+      uses: actions/upload-artifact@v7
+      with:
+        name: selenium-manager-linux-arm64-debug
+        path: selenium-manager-linux-arm64-debug.tar
+        retention-days: 6
 
 
 
+    - name: Check observables and crashes
+      if: always() && env.CHALK_ON == 'true'
+      shell: bash
+      run: |
+        set -uo pipefail
+        root="${CURIOSITY_ROOT:-}"
+        home="${CURIOSITY_HOME:-/mnt/curiosity}"
+        obs="${home}/observables"
+        fail=0
+
+        echo "::group::curiosity layout"
+        echo "CURIOSITY_ROOT=${root:-<unset>}"
+        echo "CURIOSITY_HOME=${home}"
+        ls -la "${obs}" 2>/dev/null || echo "no observables dir at ${obs}"
+        echo "::endgroup::"
+
+        # Observables for THIS run+attempt. The prefix matters: a stale file from an
+        # earlier run on the same mount would otherwise pass.
+        prefix="${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+        shopt -s nullglob
+        mine=("${obs}/${prefix}"*)
+        if [ ${#mine[@]} -eq 0 ]; then
+          mine=("${obs}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-observables"*)
+        fi
+        if [ ${#mine[@]} -eq 0 ]; then
+          echo "::error::no observables for run ${prefix} in ${obs} - instrumentation produced nothing"
+          fail=1
+        else
+          echo "observables present: ${#mine[@]} file(s)"
+          printf '  %s\n' "${mine[@]}"
+        fi
+
+        for f in "${mine[@]}"; do
+          case "$f" in
+            *.jsonl|*.json|*.combined)
+              if ! jq --slurp "." "$f" > /dev/null 2>&1; then
+                echo "::error::observables do not parse: $f"
+                fail=1
+              fi
+              ;;
+          esac
+        done
+
+        # Crash thresholds copied from check-run: a few null frames are noise, more than
+        # five is a stack walk into nothing.
+        for f in "${root}"/log/co-host*.log "${home}"/log/co-host*.log; do
+          [ -f "$f" ] || continue
+          echo "Asserting that there is no crash in $f"
+          if [ "$(grep -c 'p 00000000' "$f" 2>/dev/null || echo 0)" -gt 5 ] \
+            || [ "$(grep -E -c 'FATAL: Uncaught signal|Address not mapped at|RAX 0x.*RBX 0x' "$f" 2>/dev/null || echo 0)" -gt 1 ]; then
+            echo "::error::crash signature in $f"
+            grep -E 'FATAL: Uncaught signal|Address not mapped at' "$f" | head -5 || true
+            fail=1
+          fi
+        done
+
+        cores=("${root}"/coredump.* "${home}"/coredump.*)
+        if [ ${#cores[@]} -gt 0 ]; then
+          echo "::error::coredump present: ${cores[*]}"
+          fail=1
+        fi
+
+        for f in "${root}"/runc.log "${root}"/runc.global.log \
+                 "${home}"/runc.log "${home}"/runc.global.log; do
+          [ -f "$f" ] || continue
+          if grep -q '^E:' "$f"; then
+            echo "::error::error in $f"
+            grep '^E:' "$f" | head -5
+            fail=1
+          fi
+        done
+
+        if [ "$fail" -ne 0 ]; then
+          echo "::error::instrumentation check FAILED"
+          exit 1
+        fi
+        echo "instrumentation check passed"
   sbom:
     name: "SBOM and Notices"
     runs-on: ubuntu-latest
     needs: tests
     if: github.event_name != 'schedule' && github.event.repository.fork == false && (github.ref == 'refs/heads/trunk' || inputs.release)
     steps:
-      - name: Checkout project
-        uses: crashappsec/action-checkout@main
-        with:
-          chalk: ${{ env.CHALK_ON }}
-          profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
+    - name: Checkout project
+      uses: crashappsec/action-checkout@main
+      with:
+        chalk: ${{ env.CHALK_ON }}
+        profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
           # inert at action-checkout@main (not an input there); kept for forward-compat
-          observables_continue_on_error: false
+        observables_continue_on_error: false
           # action-checkout defaults LFS on; actions/checkout does not
-          lfs: false
-          ref: ${{ inputs.branch }}
-      - name: Assert instrumentation is live
-        if: env.CHALK_ON == 'true'
-        run: |
-          test -n "${CURIOSITY_ROOT:-}" || { echo "::error::CURIOSITY_ROOT unset - observables never installed"; exit 1; }
-          test -S "${CURIOSITY_SOCKET_NAME:?socket name unset}" || { echo "::error::co-hostd socket absent"; exit 1; }
-      - name: "Update Rust"
-        run: |
-          rustup update
-          rustc -vV
-      - name: "Install SBOM tools"
-        run: cargo install --locked cargo-cyclonedx@0.5.7 cargo-about@0.6.6
-      - name: "Generate SBOM and third-party notices"
-        working-directory: rust
-        run: |
-          # --target all includes target-gated crates for every platform, not just the host.
-          cargo cyclonedx --format json --all-features --target all
-          cargo about generate about.hbs > selenium-manager-THIRD-PARTY-NOTICES.txt
-      - name: "Upload SBOM and notices"
-        uses: actions/upload-artifact@v7
-        with:
-          name: selenium-manager-sbom
-          path: |
-            rust/selenium-manager.cdx.json
-            rust/selenium-manager-THIRD-PARTY-NOTICES.txt
-          retention-days: 6
+        lfs: false
+        ref: ${{ inputs.branch }}
+    - name: "Update Rust"
+      run: |
+        rustup update
+        rustc -vV
+    - name: "Install SBOM tools"
+      run: cargo install --locked cargo-cyclonedx@0.5.7 cargo-about@0.6.6
+    - name: "Generate SBOM and third-party notices"
+      working-directory: rust
+      run: |
+        # --target all includes target-gated crates for every platform, not just the host.
+        cargo cyclonedx --format json --all-features --target all
+        cargo about generate about.hbs > selenium-manager-THIRD-PARTY-NOTICES.txt
+    - name: "Upload SBOM and notices"
+      uses: actions/upload-artifact@v7
+      with:
+        name: selenium-manager-sbom
+        path: |
+          rust/selenium-manager.cdx.json
+          rust/selenium-manager-THIRD-PARTY-NOTICES.txt
+        retention-days: 6
 
+    - name: Check observables and crashes
+      if: always() && env.CHALK_ON == 'true'
+      shell: bash
+      run: |
+        set -uo pipefail
+        root="${CURIOSITY_ROOT:-}"
+        home="${CURIOSITY_HOME:-/mnt/curiosity}"
+        obs="${home}/observables"
+        fail=0
+
+        echo "::group::curiosity layout"
+        echo "CURIOSITY_ROOT=${root:-<unset>}"
+        echo "CURIOSITY_HOME=${home}"
+        ls -la "${obs}" 2>/dev/null || echo "no observables dir at ${obs}"
+        echo "::endgroup::"
+
+        # Observables for THIS run+attempt. The prefix matters: a stale file from an
+        # earlier run on the same mount would otherwise pass.
+        prefix="${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+        shopt -s nullglob
+        mine=("${obs}/${prefix}"*)
+        if [ ${#mine[@]} -eq 0 ]; then
+          mine=("${obs}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-observables"*)
+        fi
+        if [ ${#mine[@]} -eq 0 ]; then
+          echo "::error::no observables for run ${prefix} in ${obs} - instrumentation produced nothing"
+          fail=1
+        else
+          echo "observables present: ${#mine[@]} file(s)"
+          printf '  %s\n' "${mine[@]}"
+        fi
+
+        for f in "${mine[@]}"; do
+          case "$f" in
+            *.jsonl|*.json|*.combined)
+              if ! jq --slurp "." "$f" > /dev/null 2>&1; then
+                echo "::error::observables do not parse: $f"
+                fail=1
+              fi
+              ;;
+          esac
+        done
+
+        # Crash thresholds copied from check-run: a few null frames are noise, more than
+        # five is a stack walk into nothing.
+        for f in "${root}"/log/co-host*.log "${home}"/log/co-host*.log; do
+          [ -f "$f" ] || continue
+          echo "Asserting that there is no crash in $f"
+          if [ "$(grep -c 'p 00000000' "$f" 2>/dev/null || echo 0)" -gt 5 ] \
+            || [ "$(grep -E -c 'FATAL: Uncaught signal|Address not mapped at|RAX 0x.*RBX 0x' "$f" 2>/dev/null || echo 0)" -gt 1 ]; then
+            echo "::error::crash signature in $f"
+            grep -E 'FATAL: Uncaught signal|Address not mapped at' "$f" | head -5 || true
+            fail=1
+          fi
+        done
+
+        cores=("${root}"/coredump.* "${home}"/coredump.*)
+        if [ ${#cores[@]} -gt 0 ]; then
+          echo "::error::coredump present: ${cores[*]}"
+          fail=1
+        fi
+
+        for f in "${root}"/runc.log "${root}"/runc.global.log \
+                 "${home}"/runc.log "${home}"/runc.global.log; do
+          [ -f "$f" ] || continue
+          if grep -q '^E:' "$f"; then
+            echo "::error::error in $f"
+            grep '^E:' "$f" | head -5
+            fail=1
+          fi
+        done
+
+        if [ "$fail" -ne 0 ]; then
+          echo "::error::instrumentation check FAILED"
+          exit 1
+        fi
+        echo "instrumentation check passed"
   release:
     name: "Release Binaries"
     runs-on: ubuntu-latest
-    needs: [ linux-stable, linux-debug, sbom ]
+    needs: [linux-stable, linux-debug, sbom]
     if: github.event_name != 'schedule' && github.event.repository.fork == false && (github.ref == 'refs/heads/trunk' || inputs.release)
     steps:
-      - name: Checkout selenium_manager_artifacts
-        uses: crashappsec/action-checkout@main
-        with:
-          chalk: ${{ env.CHALK_ON }}
-          profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
+    - name: Checkout selenium_manager_artifacts
+      uses: crashappsec/action-checkout@main
+      with:
+        chalk: ${{ env.CHALK_ON }}
+        profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
           # inert at action-checkout@main (not an input there); kept for forward-compat
-          observables_continue_on_error: false
+        observables_continue_on_error: false
           # action-checkout defaults LFS on; actions/checkout does not
-          lfs: false
-          token: ${{ secrets.SELENIUM_CI_TOKEN }}
-          repository: SeleniumHQ/selenium_manager_artifacts
-      - name: Assert instrumentation is live
-        if: env.CHALK_ON == 'true'
-        run: |
-          test -n "${CURIOSITY_ROOT:-}" || { echo "::error::CURIOSITY_ROOT unset - observables never installed"; exit 1; }
-          test -S "${CURIOSITY_SOCKET_NAME:?socket name unset}" || { echo "::error::co-hostd socket absent"; exit 1; }
-      - name: "Download Artifacts"
-        uses: actions/download-artifact@v8
-        with:
-          path: artifacts
-      - name: "Prepare and Commit"
-        run: |
-          linux_sha=$(shasum -a 256 artifacts/selenium-manager-linux/selenium-manager-linux | awk '{print $1}')
-          linux_arm64_sha=$(shasum -a 256 artifacts/selenium-manager-linux-arm64/selenium-manager-linux-arm64 | awk '{print $1}')
-          macos_sha=$(shasum -a 256 artifacts/selenium-manager-macos/selenium-manager-macos | awk '{print $1}')
-          windows_sha=$(shasum -a 256 artifacts/selenium-manager-windows/selenium-manager-windows.exe | awk '{print $1}')
-          sbom_sha=$(shasum -a 256 artifacts/selenium-manager-sbom/selenium-manager.cdx.json | awk '{print $1}')
-          notice_sha=$(shasum -a 256 artifacts/selenium-manager-sbom/selenium-manager-THIRD-PARTY-NOTICES.txt | awk '{print $1}')
-          echo "{\"macos\": \"$macos_sha\", \"windows\": \"$windows_sha\", \"linux\": \"$linux_sha\", \"linux-arm64\": \"$linux_arm64_sha\", \"sbom\": \"$sbom_sha\", \"notice\": \"$notice_sha\"}" > latest.json
-          git config --local user.email "selenium-ci@users.noreply.github.com"
-          git config --local user.name "Selenium CI Bot"
-          git add latest.json
-          git commit -m "Update hash values for latest binaries"
-          short_hash=$(git rev-parse --short HEAD)
-          echo "TAG_NAME=selenium-manager-$short_hash" >> "$GITHUB_ENV"
-          git tag "selenium-manager-$short_hash"
-          git push && git push --tags
-      - name: "Release"
-        uses: softprops/action-gh-release@v3
-        with:
-          token: ${{ secrets.SELENIUM_CI_TOKEN }}
-          repository: SeleniumHQ/selenium_manager_artifacts
-          tag_name: ${{ env.TAG_NAME }}
-          draft: false
-          prerelease: false
-          files: |
-            artifacts/selenium-manager-linux/selenium-manager-linux
-            artifacts/selenium-manager-linux-arm64/selenium-manager-linux-arm64
-            artifacts/selenium-manager-macos/selenium-manager-macos
-            artifacts/selenium-manager-windows/selenium-manager-windows.exe
-            artifacts/selenium-manager-linux-debug/selenium-manager-linux-debug.tar
-            artifacts/selenium-manager-linux-arm64-debug/selenium-manager-linux-arm64-debug.tar
-            artifacts/selenium-manager-macos-debug/selenium-manager-macos-debug.tar
-            artifacts/selenium-manager-windows-debug/selenium-manager-windows-debug.exe
-            artifacts/selenium-manager-sbom/selenium-manager.cdx.json
-            artifacts/selenium-manager-sbom/selenium-manager-THIRD-PARTY-NOTICES.txt
+        lfs: false
+        token: ${{ secrets.SELENIUM_CI_TOKEN }}
+        repository: SeleniumHQ/selenium_manager_artifacts
+    - name: "Download Artifacts"
+      uses: actions/download-artifact@v8
+      with:
+        path: artifacts
+    - name: "Prepare and Commit"
+      run: |
+        linux_sha=$(shasum -a 256 artifacts/selenium-manager-linux/selenium-manager-linux | awk '{print $1}')
+        linux_arm64_sha=$(shasum -a 256 artifacts/selenium-manager-linux-arm64/selenium-manager-linux-arm64 | awk '{print $1}')
+        macos_sha=$(shasum -a 256 artifacts/selenium-manager-macos/selenium-manager-macos | awk '{print $1}')
+        windows_sha=$(shasum -a 256 artifacts/selenium-manager-windows/selenium-manager-windows.exe | awk '{print $1}')
+        sbom_sha=$(shasum -a 256 artifacts/selenium-manager-sbom/selenium-manager.cdx.json | awk '{print $1}')
+        notice_sha=$(shasum -a 256 artifacts/selenium-manager-sbom/selenium-manager-THIRD-PARTY-NOTICES.txt | awk '{print $1}')
+        echo "{\"macos\": \"$macos_sha\", \"windows\": \"$windows_sha\", \"linux\": \"$linux_sha\", \"linux-arm64\": \"$linux_arm64_sha\", \"sbom\": \"$sbom_sha\", \"notice\": \"$notice_sha\"}" > latest.json
+        git config --local user.email "selenium-ci@users.noreply.github.com"
+        git config --local user.name "Selenium CI Bot"
+        git add latest.json
+        git commit -m "Update hash values for latest binaries"
+        short_hash=$(git rev-parse --short HEAD)
+        echo "TAG_NAME=selenium-manager-$short_hash" >> "$GITHUB_ENV"
+        git tag "selenium-manager-$short_hash"
+        git push && git push --tags
+    - name: "Release"
+      uses: softprops/action-gh-release@v3
+      with:
+        token: ${{ secrets.SELENIUM_CI_TOKEN }}
+        repository: SeleniumHQ/selenium_manager_artifacts
+        tag_name: ${{ env.TAG_NAME }}
+        draft: false
+        prerelease: false
+        files: |
+          artifacts/selenium-manager-linux/selenium-manager-linux
+          artifacts/selenium-manager-linux-arm64/selenium-manager-linux-arm64
+          artifacts/selenium-manager-macos/selenium-manager-macos
+          artifacts/selenium-manager-windows/selenium-manager-windows.exe
+          artifacts/selenium-manager-linux-debug/selenium-manager-linux-debug.tar
+          artifacts/selenium-manager-linux-arm64-debug/selenium-manager-linux-arm64-debug.tar
+          artifacts/selenium-manager-macos-debug/selenium-manager-macos-debug.tar
+          artifacts/selenium-manager-windows-debug/selenium-manager-windows-debug.exe
+          artifacts/selenium-manager-sbom/selenium-manager.cdx.json
+          artifacts/selenium-manager-sbom/selenium-manager-THIRD-PARTY-NOTICES.txt
+    - name: Check observables and crashes
+      if: always() && env.CHALK_ON == 'true'
+      shell: bash
+      run: |
+        set -uo pipefail
+        root="${CURIOSITY_ROOT:-}"
+        home="${CURIOSITY_HOME:-/mnt/curiosity}"
+        obs="${home}/observables"
+        fail=0
+
+        echo "::group::curiosity layout"
+        echo "CURIOSITY_ROOT=${root:-<unset>}"
+        echo "CURIOSITY_HOME=${home}"
+        ls -la "${obs}" 2>/dev/null || echo "no observables dir at ${obs}"
+        echo "::endgroup::"
+
+        # Observables for THIS run+attempt. The prefix matters: a stale file from an
+        # earlier run on the same mount would otherwise pass.
+        prefix="${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+        shopt -s nullglob
+        mine=("${obs}/${prefix}"*)
+        if [ ${#mine[@]} -eq 0 ]; then
+          mine=("${obs}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-observables"*)
+        fi
+        if [ ${#mine[@]} -eq 0 ]; then
+          echo "::error::no observables for run ${prefix} in ${obs} - instrumentation produced nothing"
+          fail=1
+        else
+          echo "observables present: ${#mine[@]} file(s)"
+          printf '  %s\n' "${mine[@]}"
+        fi
+
+        for f in "${mine[@]}"; do
+          case "$f" in
+            *.jsonl|*.json|*.combined)
+              if ! jq --slurp "." "$f" > /dev/null 2>&1; then
+                echo "::error::observables do not parse: $f"
+                fail=1
+              fi
+              ;;
+          esac
+        done
+
+        # Crash thresholds copied from check-run: a few null frames are noise, more than
+        # five is a stack walk into nothing.
+        for f in "${root}"/log/co-host*.log "${home}"/log/co-host*.log; do
+          [ -f "$f" ] || continue
+          echo "Asserting that there is no crash in $f"
+          if [ "$(grep -c 'p 00000000' "$f" 2>/dev/null || echo 0)" -gt 5 ] \
+            || [ "$(grep -E -c 'FATAL: Uncaught signal|Address not mapped at|RAX 0x.*RBX 0x' "$f" 2>/dev/null || echo 0)" -gt 1 ]; then
+            echo "::error::crash signature in $f"
+            grep -E 'FATAL: Uncaught signal|Address not mapped at' "$f" | head -5 || true
+            fail=1
+          fi
+        done
+
+        cores=("${root}"/coredump.* "${home}"/coredump.*)
+        if [ ${#cores[@]} -gt 0 ]; then
+          echo "::error::coredump present: ${cores[*]}"
+          fail=1
+        fi
+
+        for f in "${root}"/runc.log "${root}"/runc.global.log \
+                 "${home}"/runc.log "${home}"/runc.global.log; do
+          [ -f "$f" ] || continue
+          if grep -q '^E:' "$f"; then
+            echo "::error::error in $f"
+            grep '^E:' "$f" | head -5
+            fail=1
+          fi
+        done
+
+        if [ "$fail" -ne 0 ]; then
+          echo "::error::instrumentation check FAILED"
+          exit 1
+        fi
+        echo "instrumentation check passed"

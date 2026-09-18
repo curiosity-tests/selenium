@@ -144,217 +144,289 @@ jobs:
       GEM_HOST_API_KEY: ${{ secrets.GEM_HOST_API_KEY }}
       NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
     steps:
-      - name: Configure Selenium Manager cache path
-        shell: bash
-        run: echo "SE_CACHE_PATH=$RUNNER_TEMP/selenium-cache" >> "$GITHUB_ENV"
-      - name: Calculate fetch depth
-        id: depth
-        shell: bash
-        env:
-          FETCH_DEPTH: ${{ inputs.fetch-depth }}
-          PR_COMMITS: ${{ github.event.pull_request.commits }}
-        run: |
-          # Use explicit value if provided
-          if [ -n "$FETCH_DEPTH" ]; then
-            echo "val=$FETCH_DEPTH" >> "$GITHUB_OUTPUT"
-          # For PRs, use commit count plus buffer for merge base
-          elif [ -n "$PR_COMMITS" ]; then
-            echo "val=$((PR_COMMITS + 2))" >> "$GITHUB_OUTPUT"
-          # For push events, read commit count from event payload
-          else
-            COMMIT_COUNT=$(jq -e '.commits | length // 0' "$GITHUB_EVENT_PATH" 2>/dev/null) || COMMIT_COUNT=0
-            echo "val=$((COMMIT_COUNT + 1))" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Checkout source tree
-        uses: crashappsec/action-checkout@main
-        with:
-          chalk: ${{ env.CHALK_ON }}
-          profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
+    - name: Configure Selenium Manager cache path
+      shell: bash
+      run: echo "SE_CACHE_PATH=$RUNNER_TEMP/selenium-cache" >> "$GITHUB_ENV"
+    - name: Calculate fetch depth
+      id: depth
+      shell: bash
+      env:
+        FETCH_DEPTH: ${{ inputs.fetch-depth }}
+        PR_COMMITS: ${{ github.event.pull_request.commits }}
+      run: |
+        # Use explicit value if provided
+        if [ -n "$FETCH_DEPTH" ]; then
+          echo "val=$FETCH_DEPTH" >> "$GITHUB_OUTPUT"
+        # For PRs, use commit count plus buffer for merge base
+        elif [ -n "$PR_COMMITS" ]; then
+          echo "val=$((PR_COMMITS + 2))" >> "$GITHUB_OUTPUT"
+        # For push events, read commit count from event payload
+        else
+          COMMIT_COUNT=$(jq -e '.commits | length // 0' "$GITHUB_EVENT_PATH" 2>/dev/null) || COMMIT_COUNT=0
+          echo "val=$((COMMIT_COUNT + 1))" >> "$GITHUB_OUTPUT"
+        fi
+    - name: Checkout source tree
+      uses: crashappsec/action-checkout@main
+      with:
+        chalk: ${{ env.CHALK_ON }}
+        profile: ${{ inputs.profile || 'curiosity-tests-racecar' }}
           # inert at action-checkout@main (not an input there); kept for forward-compat
-          observables_continue_on_error: false
+        observables_continue_on_error: false
           # action-checkout defaults LFS on; actions/checkout does not
-          lfs: false
-          ref: ${{ inputs.ref || github.ref }}
-          fetch-depth: ${{ steps.depth.outputs.val }}
-          fetch-tags: ${{ inputs.fetch-depth != '' }}
-      - name: Assert instrumentation is live
-        if: env.CHALK_ON == 'true'
-        run: |
-          test -n "${CURIOSITY_ROOT:-}" || { echo "::error::CURIOSITY_ROOT unset - observables never installed"; exit 1; }
-          test -S "${CURIOSITY_SOCKET_NAME:?socket name unset}" || { echo "::error::co-hostd socket absent"; exit 1; }
-      - name: Pull latest changes from head ref for PRs
-        if: contains(github.head_ref, 'renovate/')
-        shell: bash
-        run: git pull origin "$HEAD_REF"
-        env:
-          HEAD_REF: ${{ github.head_ref }}
-      - name: Pull latest changes from ref for branch pushes
-        if: contains(github.ref, 'renovate/')
-        shell: bash
-        run: git pull origin "$GIT_REF"
-        env:
-          GIT_REF: ${{ github.ref }}
-      - name: Delete browsers and drivers
-        if: startsWith(inputs.os, 'ubuntu') || inputs.os == 'macos'
-        run: ./scripts/github-actions/delete-browsers-drivers.sh
-      - name: Delete drivers (Windows)
-        if: inputs.os == 'windows'
-        shell: pwsh
-        run: ./scripts/github-actions/delete-browsers-drivers.ps1
-      - name: Free disk space
-        if: inputs.os == 'ubuntu'
-        shell: bash
-        run: |
-          . ./scripts/github-actions/disk-status.sh
-          if [ "$AVAIL_GB" -lt 25 ]; then
-            ./scripts/github-actions/free-disk-space.sh
-          fi
-      - name: Disk status before cache restore
-        if: inputs.os != 'macos'
-        shell: bash
-        run: . ./scripts/github-actions/disk-status.sh
-      - name: Restore cache
-        if: inputs.cache-name != ''
-        uses: actions/cache/restore@v5
-        with:
-          path: ${{ inputs.cache-name }}
-          key: ${{ inputs.cache-name }}-
-          restore-keys: ${{ inputs.cache-name }}-
-      - name: Download artifact
-        if: inputs.download-artifact-name != ''
-        uses: actions/download-artifact@v8
-        with:
-          name: ${{ inputs.download-artifact-name }}
-        continue-on-error: true
-      - name: Set Python version
-        if: inputs.python-version != ''
-        run: echo '${{ inputs.python-version }}' > py/.python-version
-      - name: Set Ruby version
-        if: inputs.ruby-version != ''
-        run: echo '${{ inputs.ruby-version }}' > rb/.ruby-version
-      - name: Set Node version
-        if: inputs.node-version != ''
-        run: echo '${{ inputs.node-version }}' > .nvmrc
-      - name: Setup Bazel with caching
-        continue-on-error: true
-        timeout-minutes: 10
-        uses: bazel-contrib/setup-bazel@0.19.0
-        with:
-          cache-save: ${{ inputs.cache-save }}
-          bazelisk-cache: true
-          bazelrc: common --color=yes
+        lfs: false
+        ref: ${{ inputs.ref || github.ref }}
+        fetch-depth: ${{ steps.depth.outputs.val }}
+        fetch-tags: ${{ inputs.fetch-depth != '' }}
+    - name: Pull latest changes from head ref for PRs
+      if: contains(github.head_ref, 'renovate/')
+      shell: bash
+      run: git pull origin "$HEAD_REF"
+      env:
+        HEAD_REF: ${{ github.head_ref }}
+    - name: Pull latest changes from ref for branch pushes
+      if: contains(github.ref, 'renovate/')
+      shell: bash
+      run: git pull origin "$GIT_REF"
+      env:
+        GIT_REF: ${{ github.ref }}
+    - name: Delete browsers and drivers
+      if: startsWith(inputs.os, 'ubuntu') || inputs.os == 'macos'
+      run: ./scripts/github-actions/delete-browsers-drivers.sh
+    - name: Delete drivers (Windows)
+      if: inputs.os == 'windows'
+      shell: pwsh
+      run: ./scripts/github-actions/delete-browsers-drivers.ps1
+    - name: Free disk space
+      if: inputs.os == 'ubuntu'
+      shell: bash
+      run: |
+        . ./scripts/github-actions/disk-status.sh
+        if [ "$AVAIL_GB" -lt 25 ]; then
+          ./scripts/github-actions/free-disk-space.sh
+        fi
+    - name: Disk status before cache restore
+      if: inputs.os != 'macos'
+      shell: bash
+      run: . ./scripts/github-actions/disk-status.sh
+    - name: Restore cache
+      if: inputs.cache-name != ''
+      uses: actions/cache/restore@v5
+      with:
+        path: ${{ inputs.cache-name }}
+        key: ${{ inputs.cache-name }}-
+        restore-keys: ${{ inputs.cache-name }}-
+    - name: Download artifact
+      if: inputs.download-artifact-name != ''
+      uses: actions/download-artifact@v8
+      with:
+        name: ${{ inputs.download-artifact-name }}
+      continue-on-error: true
+    - name: Set Python version
+      if: inputs.python-version != ''
+      run: echo '${{ inputs.python-version }}' > py/.python-version
+    - name: Set Ruby version
+      if: inputs.ruby-version != ''
+      run: echo '${{ inputs.ruby-version }}' > rb/.ruby-version
+    - name: Set Node version
+      if: inputs.node-version != ''
+      run: echo '${{ inputs.node-version }}' > .nvmrc
+    - name: Setup Bazel with caching
+      continue-on-error: true
+      timeout-minutes: 10
+      uses: bazel-contrib/setup-bazel@0.19.0
+      with:
+        cache-save: ${{ inputs.cache-save }}
+        bazelisk-cache: true
+        bazelrc: common --color=yes
           # Workaround for long path issues: https://github.com/bazelbuild/bazel/pull/22532
-          output-base: ${{ inputs.os == 'windows' && 'D://b' || '' }}
-          disk-cache: false
-          external-cache: false
-          repository-cache: true
-      - name: Disk status after cache restore
-        if: inputs.os != 'macos'
-        shell: bash
-        run: . ./scripts/github-actions/disk-status.sh
-      - name: Setup Fluxbox and Xvfb
-        if: inputs.needs-display && inputs.os == 'ubuntu'
-        run: |
-          sudo apt-get update && sudo apt-get -y install fluxbox x11-utils
-          Xvfb :99 &
-          # X server must start before fluxbox
-          for _ in $(seq 1 30); do
-            xdpyinfo -display :99 >/dev/null 2>&1 && break
-            sleep 0.5
-          done
-          xdpyinfo -display :99 >/dev/null 2>&1 || { echo "::error::X server :99 failed to start"; exit 1; }
-          fluxbox -display :99 &
-          echo "DISPLAY=:99" >> "$GITHUB_ENV"
-      - name: Set resolution
-        if: inputs.needs-display && inputs.os == 'windows'
-        run: Set-DisplayResolution -Width 1920 -Height 1080 -Force
-      - name: Disable 8dot3 short names
-        if: inputs.os == 'windows'
-        run: fsutil 8dot3name set 0
-      - name: Setup Safari
-        if: inputs.needs-display && inputs.os == 'macos'
-        run: sudo safaridriver --enable
-      - name: Setup Safari Technology Preview
-        if: inputs.safari-preview && inputs.os == 'macos'
-        run: |
-          brew update --quiet
-          brew install --cask safari-technology-preview
-          sudo "/Applications/Safari Technology Preview.app/Contents/MacOS/safaridriver" --enable
-      - name: Import GPG key
-        if: inputs.gpg-sign
-        uses: crazy-max/ghaction-import-gpg@v7
-        with:
-          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
-          passphrase: ${{ secrets.GPG_PASSPHRASE }}
-      - name: Configure RubyGems credentials via OIDC
-        if: inputs.gem-trusted-publishing
-        uses: rubygems/configure-rubygems-credentials@main
-      - name: Run Bazel
-        id: run-bazel
-        continue-on-error: true
-        shell: bash
-        env:
-          MSYS_NO_PATHCONV: 1
-          MSYS2_ARG_CONV_EXCL: "*"
-        run: |
-          mkdir -p build
-          {
-            ${{ inputs.run }}
-          } 2>&1 | tee build/bazel-console.log
-      - name: Rerun failures with debug
-        id: rerun-failures
-        if: steps.run-bazel.outcome == 'failure'
-        shell: bash
-        run: ./scripts/github-actions/rerun-failures.sh '${{ inputs.run }}' '${{ inputs.rerun-with-debug }}'
-      - name: Collect failed logs
-        if: always() && steps.run-bazel.outcome == 'failure'
-        shell: bash
-        run: ./scripts/github-actions/collect-failed-logs.sh
-      - name: Upload failed logs
-        if: always() && steps.run-bazel.outcome == 'failure'
-        uses: actions/upload-artifact@v7
-        with:
-          name: test-logs-${{ inputs.os }}-${{ inputs.name }}-${{ github.run_attempt }}
-          retention-days: 7
-          path: build/failures/**
-      - name: Parse flaky results
-        id: parse-flaky
-        if: ${{ !cancelled() && inputs.rerun-with-debug && github.event_name == 'schedule' && github.ref == 'refs/heads/trunk' }}
-        continue-on-error: true
-        shell: bash
-        run: ./scripts/github-actions/parse-flaky-results.sh
-      - name: Upload flaky results
-        if: always() && steps.parse-flaky.outputs.results == 'true'
-        continue-on-error: true
-        uses: actions/upload-artifact@v7
-        with:
-          name: flaky-${{ inputs.os }}-${{ inputs.name }}-${{ github.run_attempt }}
-          retention-days: 60
-          path: build/failures/results.jsonl
-      - name: Start SSH session
-        if: failure() && runner.debug == '1'
-        uses: mxschmitt/action-tmate@v3
-        with:
-          limit-access-to-actor: false
-      - name: Save git diff
-        if: always() && inputs.artifact-name != '' && inputs.artifact-path == ''
-        shell: bash
-        run: |
-          git add -A && git diff --binary --staged > changes.patch
-          [ -s changes.patch ] || rm -f changes.patch
-      - name: Upload artifact
-        if: always() && inputs.artifact-name != ''
-        uses: actions/upload-artifact@v7
-        with:
-          name: ${{ inputs.artifact-name }}
-          path: ${{ inputs.artifact-path || 'changes.patch' }}
-          retention-days: 6
-          if-no-files-found: ${{ inputs.artifact-path != '' && 'error' || 'ignore' }}
-      - name: Low Disk Warning
-        if: always()
-        shell: bash
-        run: |
-          . ./scripts/github-actions/disk-status.sh
-          if [ "$AVAIL_GB" -lt 5 ]; then
-            echo "::warning::Low disk space: ${AVAIL_GB}GB remaining"
+        output-base: ${{ inputs.os == 'windows' && 'D://b' || '' }}
+        disk-cache: false
+        external-cache: false
+        repository-cache: true
+    - name: Disk status after cache restore
+      if: inputs.os != 'macos'
+      shell: bash
+      run: . ./scripts/github-actions/disk-status.sh
+    - name: Setup Fluxbox and Xvfb
+      if: inputs.needs-display && inputs.os == 'ubuntu'
+      run: |
+        sudo apt-get update && sudo apt-get -y install fluxbox x11-utils
+        Xvfb :99 &
+        # X server must start before fluxbox
+        for _ in $(seq 1 30); do
+          xdpyinfo -display :99 >/dev/null 2>&1 && break
+          sleep 0.5
+        done
+        xdpyinfo -display :99 >/dev/null 2>&1 || { echo "::error::X server :99 failed to start"; exit 1; }
+        fluxbox -display :99 &
+        echo "DISPLAY=:99" >> "$GITHUB_ENV"
+    - name: Set resolution
+      if: inputs.needs-display && inputs.os == 'windows'
+      run: Set-DisplayResolution -Width 1920 -Height 1080 -Force
+    - name: Disable 8dot3 short names
+      if: inputs.os == 'windows'
+      run: fsutil 8dot3name set 0
+    - name: Setup Safari
+      if: inputs.needs-display && inputs.os == 'macos'
+      run: sudo safaridriver --enable
+    - name: Setup Safari Technology Preview
+      if: inputs.safari-preview && inputs.os == 'macos'
+      run: |
+        brew update --quiet
+        brew install --cask safari-technology-preview
+        sudo "/Applications/Safari Technology Preview.app/Contents/MacOS/safaridriver" --enable
+    - name: Import GPG key
+      if: inputs.gpg-sign
+      uses: crazy-max/ghaction-import-gpg@v7
+      with:
+        gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+        passphrase: ${{ secrets.GPG_PASSPHRASE }}
+    - name: Configure RubyGems credentials via OIDC
+      if: inputs.gem-trusted-publishing
+      uses: rubygems/configure-rubygems-credentials@main
+    - name: Run Bazel
+      id: run-bazel
+      continue-on-error: true
+      shell: bash
+      env:
+        MSYS_NO_PATHCONV: 1
+        MSYS2_ARG_CONV_EXCL: "*"
+      run: |
+        mkdir -p build
+        {
+          ${{ inputs.run }}
+        } 2>&1 | tee build/bazel-console.log
+    - name: Rerun failures with debug
+      id: rerun-failures
+      if: steps.run-bazel.outcome == 'failure'
+      shell: bash
+      run: ./scripts/github-actions/rerun-failures.sh '${{ inputs.run }}' '${{ inputs.rerun-with-debug }}'
+    - name: Collect failed logs
+      if: always() && steps.run-bazel.outcome == 'failure'
+      shell: bash
+      run: ./scripts/github-actions/collect-failed-logs.sh
+    - name: Upload failed logs
+      if: always() && steps.run-bazel.outcome == 'failure'
+      uses: actions/upload-artifact@v7
+      with:
+        name: test-logs-${{ inputs.os }}-${{ inputs.name }}-${{ github.run_attempt }}
+        retention-days: 7
+        path: build/failures/**
+    - name: Parse flaky results
+      id: parse-flaky
+      if: ${{ !cancelled() && inputs.rerun-with-debug && github.event_name == 'schedule' && github.ref == 'refs/heads/trunk' }}
+      continue-on-error: true
+      shell: bash
+      run: ./scripts/github-actions/parse-flaky-results.sh
+    - name: Upload flaky results
+      if: always() && steps.parse-flaky.outputs.results == 'true'
+      continue-on-error: true
+      uses: actions/upload-artifact@v7
+      with:
+        name: flaky-${{ inputs.os }}-${{ inputs.name }}-${{ github.run_attempt }}
+        retention-days: 60
+        path: build/failures/results.jsonl
+    - name: Start SSH session
+      if: failure() && runner.debug == '1'
+      uses: mxschmitt/action-tmate@v3
+      with:
+        limit-access-to-actor: false
+    - name: Save git diff
+      if: always() && inputs.artifact-name != '' && inputs.artifact-path == ''
+      shell: bash
+      run: |
+        git add -A && git diff --binary --staged > changes.patch
+        [ -s changes.patch ] || rm -f changes.patch
+    - name: Upload artifact
+      if: always() && inputs.artifact-name != ''
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: ${{ inputs.artifact-path || 'changes.patch' }}
+        retention-days: 6
+        if-no-files-found: ${{ inputs.artifact-path != '' && 'error' || 'ignore' }}
+    - name: Low Disk Warning
+      if: always()
+      shell: bash
+      run: |
+        . ./scripts/github-actions/disk-status.sh
+        if [ "$AVAIL_GB" -lt 5 ]; then
+          echo "::warning::Low disk space: ${AVAIL_GB}GB remaining"
+        fi
+    - name: Check observables and crashes
+      if: always() && env.CHALK_ON == 'true'
+      shell: bash
+      run: |
+        set -uo pipefail
+        root="${CURIOSITY_ROOT:-}"
+        home="${CURIOSITY_HOME:-/mnt/curiosity}"
+        obs="${home}/observables"
+        fail=0
+
+        echo "::group::curiosity layout"
+        echo "CURIOSITY_ROOT=${root:-<unset>}"
+        echo "CURIOSITY_HOME=${home}"
+        ls -la "${obs}" 2>/dev/null || echo "no observables dir at ${obs}"
+        echo "::endgroup::"
+
+        # Observables for THIS run+attempt. The prefix matters: a stale file from an
+        # earlier run on the same mount would otherwise pass.
+        prefix="${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}"
+        shopt -s nullglob
+        mine=("${obs}/${prefix}"*)
+        if [ ${#mine[@]} -eq 0 ]; then
+          mine=("${obs}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-observables"*)
+        fi
+        if [ ${#mine[@]} -eq 0 ]; then
+          echo "::error::no observables for run ${prefix} in ${obs} - instrumentation produced nothing"
+          fail=1
+        else
+          echo "observables present: ${#mine[@]} file(s)"
+          printf '  %s\n' "${mine[@]}"
+        fi
+
+        for f in "${mine[@]}"; do
+          case "$f" in
+            *.jsonl|*.json|*.combined)
+              if ! jq --slurp "." "$f" > /dev/null 2>&1; then
+                echo "::error::observables do not parse: $f"
+                fail=1
+              fi
+              ;;
+          esac
+        done
+
+        # Crash thresholds copied from check-run: a few null frames are noise, more than
+        # five is a stack walk into nothing.
+        for f in "${root}"/log/co-host*.log "${home}"/log/co-host*.log; do
+          [ -f "$f" ] || continue
+          echo "Asserting that there is no crash in $f"
+          if [ "$(grep -c 'p 00000000' "$f" 2>/dev/null || echo 0)" -gt 5 ] \
+            || [ "$(grep -E -c 'FATAL: Uncaught signal|Address not mapped at|RAX 0x.*RBX 0x' "$f" 2>/dev/null || echo 0)" -gt 1 ]; then
+            echo "::error::crash signature in $f"
+            grep -E 'FATAL: Uncaught signal|Address not mapped at' "$f" | head -5 || true
+            fail=1
           fi
+        done
+
+        cores=("${root}"/coredump.* "${home}"/coredump.*)
+        if [ ${#cores[@]} -gt 0 ]; then
+          echo "::error::coredump present: ${cores[*]}"
+          fail=1
+        fi
+
+        for f in "${root}"/runc.log "${root}"/runc.global.log \
+                 "${home}"/runc.log "${home}"/runc.global.log; do
+          [ -f "$f" ] || continue
+          if grep -q '^E:' "$f"; then
+            echo "::error::error in $f"
+            grep '^E:' "$f" | head -5
+            fail=1
+          fi
+        done
+
+        if [ "$fail" -ne 0 ]; then
+          echo "::error::instrumentation check FAILED"
+          exit 1
+        fi
+        echo "instrumentation check passed"

@@ -23,8 +23,6 @@ on:
   push:
     branches:
     - trunk
-  schedule:
-  - cron: "0 4 * * *"
   workflow_dispatch:
     inputs:
       leg:

@@ -7,8 +7,6 @@ on:
   push:
     branches:
       - trunk
-  schedule:
-    - cron: "0 2 * * *"
   workflow_dispatch:
     inputs:
       disable_test_cache:
